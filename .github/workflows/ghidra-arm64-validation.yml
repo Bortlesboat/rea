@@ -10,6 +10,7 @@ permissions:
 env:
   NODE_OPTIONS: --max-old-space-size=768
   JDK_JAVA_OPTIONS: -Xmx512m -XX:ActiveProcessorCount=1
+  _JAVA_OPTIONS: -Xmx512m -XX:ActiveProcessorCount=1
   GOMAXPROCS: "1"
   RAYON_NUM_THREADS: "1"
 
@@ -27,7 +28,7 @@ jobs:
         run: |
           test "$(uname -m)" = aarch64
           test "$(node -p 'process.arch')" = arm64
-          for command in g++ make curl unzip file timeout taskset; do command -v "$command"; done
+          for command in gcc g++ make curl unzip file timeout taskset; do command -v "$command"; done
           jdk="${JAVA_HOME_21_ARM64:-${JAVA_HOME_21_X64:-/usr/lib/jvm/temurin-21-jdk-arm64}}"
           test -x "$jdk/bin/javac"
           grep -E '^JAVA_VERSION="21[.]' "$jdk/release"
@@ -70,6 +71,15 @@ jobs:
           install -Dm755 "$source/ghidra_opt" "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile"
           file "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile"
           sha256sum "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile" > "$RUNNER_TEMP/rea-ghidra-arm64/decompiler.sha256"
+      - name: Build matching GNU demangler required by namespace acceptance
+        shell: bash
+        run: |
+          source="$GHIDRA_INSTALL_DIR/GPL/DemanglerGnu/src/demangler_gnu_v2_41"
+          destination="$GHIDRA_INSTALL_DIR/GPL/DemanglerGnu/os/linux_arm_64/demangler_gnu_v2_41"
+          mkdir -p "$(dirname "$destination")"
+          taskset -c "$REA_VERIFICATION_CPU" gcc -std=gnu17 -DHAVE_STDLIB_H -DHAVE_STRING_H -I"$source/headers" "$source"/c/*.c -o "$destination" > "$RUNNER_TEMP/rea-ghidra-arm64/demangler-build.log" 2>&1
+          file "$destination"
+          sha256sum "$destination" > "$RUNNER_TEMP/rea-ghidra-arm64/demangler.sha256"
       - name: Run unchanged real-provider host-native acceptance
         shell: bash
         run: |
