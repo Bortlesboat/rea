@@ -28,8 +28,9 @@ jobs:
           test "$(uname -m)" = aarch64
           test "$(node -p 'process.arch')" = arm64
           for command in g++ make curl unzip file timeout taskset; do command -v "$command"; done
-          jdk="${JAVA_HOME_21_ARM64:-${JAVA_HOME:-}}"
+          jdk="${JAVA_HOME_21_ARM64:-${JAVA_HOME_21_X64:-/usr/lib/jvm/temurin-21-jdk-arm64}}"
           test -x "$jdk/bin/javac"
+          grep -E '^JAVA_VERSION="21[.]' "$jdk/release"
           "$jdk/bin/java" -version
           echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
           echo "REA_VERIFICATION_CPU=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" >> "$GITHUB_ENV"
