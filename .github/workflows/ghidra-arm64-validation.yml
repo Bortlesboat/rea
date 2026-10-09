@@ -1,0 +1,90 @@
+name: Temporary real Ghidra Linux arm64 verification
+
+on:
+  push:
+    branches: [validation/ghidra-linux-arm64-20261009]
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: --max-old-space-size=768
+  JDK_JAVA_OPTIONS: -Xmx512m -XX:ActiveProcessorCount=1
+  GOMAXPROCS: "1"
+  RAYON_NUM_THREADS: "1"
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .nvmrc
+      - name: Preflight native host and existing tools
+        shell: bash
+        run: |
+          test "$(uname -m)" = aarch64
+          test "$(node -p 'process.arch')" = arm64
+          for command in g++ make curl unzip file timeout taskset; do command -v "$command"; done
+          jdk="${JAVA_HOME_21_ARM64:-${JAVA_HOME:-}}"
+          test -x "$jdk/bin/javac"
+          "$jdk/bin/java" -version
+          echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
+          echo "REA_VERIFICATION_CPU=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/rea-ghidra-arm64"
+      - name: Install locked development dependencies and build
+        shell: bash
+        run: |
+          taskset -c "$REA_VERIFICATION_CPU" npx --yes npm@11.16.0 ci
+          taskset -c "$REA_VERIFICATION_CPU" npm run build:cached
+      - name: Fetch digest-pinned upstream distribution into private workspace
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/ghidra.zip"
+          curl --fail --location --retry 2 --max-time 180 --output "$archive" https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip
+          echo "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db  $archive" | sha256sum --check
+          unzip -q "$archive" -d "$RUNNER_TEMP"
+          echo "GHIDRA_INSTALL_DIR=$RUNNER_TEMP/ghidra_12.1.4_PUBLIC" >> "$GITHUB_ENV"
+      - name: Reject missing native decompiler on actual arm64 host
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {inspectGhidraInstallation} from './dist/ghidra/GhidraInstallation.js';
+          const result=inspectGhidraInstallation({installDir:process.env.GHIDRA_INSTALL_DIR,javaHome:process.env.JAVA_HOME});
+          console.log(JSON.stringify(result));
+          assert.equal(result.platform,'linux');
+          assert.equal(result.architecture,'arm64');
+          assert.equal(result.status,'unavailable');
+          assert.equal(result.checks.find(x=>x.name==='architecture').status,'passed');
+          assert.equal(result.checks.find(x=>x.name==='native_decompiler').status,'failed');
+          JS
+      - name: Build upstream native arm64 decompiler without system installation
+        shell: bash
+        run: |
+          source="$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/src/decompile/cpp"
+          taskset -c "$REA_VERIFICATION_CPU" make -C "$source" -j1 ghidra_opt ARCH_TYPE= OSDIR=linux_arm_64 > "$RUNNER_TEMP/rea-ghidra-arm64/native-build.log" 2>&1
+          install -Dm755 "$source/ghidra_opt" "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile"
+          file "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile"
+          sha256sum "$GHIDRA_INSTALL_DIR/Ghidra/Features/Decompiler/os/linux_arm_64/decompile" > "$RUNNER_TEMP/rea-ghidra-arm64/decompiler.sha256"
+      - name: Run unchanged real-provider host-native acceptance
+        shell: bash
+        run: |
+          timeout --signal=TERM --kill-after=30s 15m taskset -c "$REA_VERIFICATION_CPU" node scripts/verify-real-ghidra.mjs > "$RUNNER_TEMP/rea-ghidra-arm64/verification.json" 2> "$RUNNER_TEMP/rea-ghidra-arm64/verification.stderr"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {readFile} from 'node:fs/promises';
+          const report=JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/rea-ghidra-arm64/verification.json`,'utf8'));
+          assert.equal(report.ok,true);
+          assert.equal(report.cleanup,'complete');
+          console.log(JSON.stringify(report));
+          JS
+      - name: Retain source-owned verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-ghidra-linux-arm64
+          path: ${{ runner.temp }}/rea-ghidra-arm64
+          retention-days: 7
